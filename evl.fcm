@@ -1,0 +1,1047 @@
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+c
+c    Evolution for passive scalar      (5/8/96)            
+c    Cumulate moments, pdfs of (du_r)^n,(dp_r)^n      (5/9/96)
+c    Add switch for random forcing      (6/25/96)
+c
+ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      parameter (nx=256,ny=512,nz=512,nx2=nx/2,n2=2*nx)
+c     parameter (nx=128,ny=256,nz=256,nx2=nx/2,n2=2*nx)
+c     parameter (nx=64,ny=128,nz=128,nx2=nx/2,n2=2*nx)
+c     parameter (nx=32,ny=64,nz=64,nx2=nx/2,n2=2*nx)
+      parameter (nbar=150,vbound=20.0,pbound=1.0)
+      include '/usr/include/cm/CMF_defs.h'
+      include '/usr/include/cm/cmssl-cmf.h'
+      complex,array(nx,ny,nz)::vx,vy,vz,wx,wy,wz,ox,oy,oz,tmp_z
+      complex,array(nx,ny,nz)::passive_x,passive_y,passive_z
+      complex,array(nx,ny,nz)::passive,passive_0
+      real,   array(nx,ny,nz)::kx,ky,kz,k2,k2_e,tmp,tmp1
+      real,   array(n2,ny,nz)::uu,u2,p2
+      complex w(nx2)
+      real force_c(2),force_p(2),eku(500),ekp(500),kd,etrr(500),
+     .     lambda
+      character*45 fdata(5)
+      character*40 filename,fscr,ic,f_type_in,f_type_out,fmrg,forcing
+      logical new,timing,dump
+      integer ifcnt(2), ifijk(200,3,2),ishift(256)
+      real dist1(-nbar:nbar), dist2(-nbar:nbar)
+      real dist3(-nbar:nbar), dist4(-nbar:nbar),fac(4)
+      real distp(-nbar:nbar), distdp(-nbar:nbar),gac(2)
+      real dist_du(-nbar:nbar,100),dist_dp(-nbar:nbar,100),hdu(100)
+     1     ,hdp(100),er(10)
+c-------------------------------------
+      integer sigterm, sigxcpu, sigflag
+      external sig_handle
+      logical trap
+c--------------------------------------
+      common / mrg / flg
+      common / kill / trap
+c--------------------------------------
+      
+      common / vmax / high,m2
+      common / dim / mx,my,mz,mx2,id_fft
+CMF$ layout vx(:serial,,),vy(:serial,,),vz(:serial,,),tmp1(:serial,,)
+CMF$ layout ox(:serial,,),oy(:serial,,),oz(:serial,,),tmp(:serial,,)
+CMF$ layout wx(:serial,,),wy(:serial,,),wz(:serial,,),k2(:serial,,)
+CMF$ layout kx(:serial,,),ky(:serial,,),kz(:serial,,),k2_e(:serial,,)
+CMF$ layout passive(:serial,,),passive_0(:serial,,),passive_z(:serial,,)
+CMF$ layout passive_x(:serial,,),passive_y(:serial,,)
+CMF$ layout tmp_z(:serial,,),uu(:serial,,),u2(:serial,,),p2(:serial,,)
+
+c     data    fdata /'/n/cm5/sda/sda2/nian/pass/D1',
+c    1               '/n/cm5/sda/sda2/nian/pass/D2',
+c    2               '/n/cm5/sda/sda2/nian/pass/D3',
+c    3               '/n/cm5/sda/sda2/nian/pass/D4',
+c    4               '/n/cm5/sda/sda2/nian/pass/D5'/
+c     data    fscr /'/n/cm5/sda/sda2/nian/pass/scratch'/
+c     data    fmrg /'/n/cm5/sda/sda2/nian/pass/D'/
+* ------
+      data    fdata /'/n/cm5/sda/sda1/syc/cao/pass/D1',
+     1               '/n/cm5/sda/sda1/syc/cao/pass/D2',
+     2               '/n/cm5/sda/sda1/syc/cao/pass/D3',
+     3               '/n/cm5/sda/sda1/syc/cao/pass/D4',
+     4               '/n/cm5/sda/sda1/syc/cao/pass/D5'/
+      data    fscr /'/n/cm5/sda/sda1/syc/cao/pass/scratch'/
+      data    fmrg /'/n/cm5/sda/sda1/syc/cao/pass/D'/
+
+      data istep, is, ak0, akp/ -1, -1, 4.75683,4.75683/
+
+c----- trap --------------------
+        sigflag=-1
+        sigterm=15
+        sigxcpu=24
+        call signal(sigterm,sig_handle,sigflag)
+        call signal(sigxcpu,sig_handle,sigflag)
+c-----------------------------------
+
+      pi=3.14159265359
+      mx=nx
+      my=ny
+      mz=nz
+      mx2=nx2
+      m2=n2
+      
+        is = 0
+        iii = 1
+        kkk = 1
+        scale=1./(n2*ny*nz)
+
+      open(1,file='evlc.input',status='old')
+      read(1,*) nstep
+      read(1,*) tout
+      read(1,*) eout
+      read(1,*) dt
+      read(1,*) rnu,akapa
+      read(1,*) u0,ap0
+      read(1,*) time
+      read(1,*) ic                     
+      read(1,*) timing
+      read(1,*) nvfor,force_c
+      read(1,*) npfor,force_p
+      read(1,*) forcing
+      read(1,*) f_type_in
+      read(1,*) filename
+      close(1)
+       ieout = int(eout/dt)
+       itout = int(tout/dt)
+       write(*,*)ieout,itout
+
+      open(1,file='ishift.d',status='old')
+      read(1,*) n512,n256,n128,n64
+      do i=1,n512
+         read(1,*) i0,ishift(i)
+      enddo
+      close(1)
+
+        if(ny.eq.512) nlocal=n512
+        if(ny.eq.256) nlocal=n256
+        if(ny.eq.128) nlocal=n128
+        if(ny.eq.64) nlocal=n64
+
+
+        if(ic.eq.'dump') then
+          isw=0
+         open(22,file='his-pass.d',status='unknown',access='append')
+         open(19,file='his.d',status='unknown',access='append')
+         open(20,file='spectra.d',status='unknown',access='append')
+         open(80,file='du.d',status='unknown',access='append')
+         open(81,file='dp.d',status='unknown',access='append')
+         open(82,file='dpdu.d',status='unknown',access='append')
+c read in statistics
+         open(26,file='pdf_du.d',status='unknown')     !pdf_du.d
+         do ii=1,nlocal
+            read(26,*) iii1,hdu(ii),hdp(ii)
+            do i=-nbar,nbar
+               read(26,*) i0,dist_du(i,ii),dist_dp(i,ii)
+            enddo
+         enddo
+         close(26)
+          else
+           isw=0
+         open(22,file='his-pass.d',status='unknown')
+         open(19,file='his.d',status='unknown')
+         open(20,file='spectra.d',status='unknown')
+         open(80,file='du.d',status='unknown')
+         open(81,file='dp.d',status='unknown')
+         open(82,file='dpdu.d',status='unknown')
+         write(22,*) '#k   time - pc - 1/etac - 1/etab - pp2 - 
+     .pp4 - dpp2 - dpp4'
+         write(19,*) '#k   time - re_l - kd - t_eddy - uu2 - 
+     .uu4 - duu2 - duu4'
+c >>>initialize the arrays of statistics
+         if(ic.ne.'dump') then
+            do i=-nbar,nbar
+               do ii=1,nlocal
+                  dist_du(i,ii)=0
+                  dist_dp(i,ii)=0
+               enddo
+            enddo
+         endif
+c <<<
+        endif
+
+        
+      theta=pi/nx
+      do i=1,nx2
+         w(i)=cmplx(-sin((i-1)*theta),cos((i-1)*theta))
+      enddo
+      id_fft=fft_setup(vx,'CTOC',ier)
+      nek=0.9*sqrt(nx*nx+.25*ny*ny+.25*nz*nz)
+      
+      call wavenumber(kx,ky,kz,k2,k2_e,dt,rnu)
+
+      if(ic.eq.'both-new') then
+         call CMF_randomize(651021)
+         call gaussian(vx,kx,ky)
+         call gaussian(vy,kx,ky)
+         call gaussian(vz,kx,ky)
+         call gaussian(passive,kx,ky)
+      elseif(ic.eq.'vel-new') then
+         call CMF_randomize(651021)
+         call gaussian(vx,kx,ky)
+         call gaussian(vy,kx,ky)
+         call gaussian(vz,kx,ky)
+         call CMF_FILE_OPEN(1,filename,iostat)
+         if(iostat.eq.-1) stop 'Fail to open initial data file'
+         call from_sda(passive,1,f_type_in,iostat) 
+         if(iostat.eq.-1) stop 'Error reading initial data file'
+         call CMF_FILE_CLOSE(1,iostat)
+         write(*,*)'1after reading:',filename
+      elseif(ic.eq.'pass-new') then 
+         call CMF_randomize(651021)
+         call gaussian(passive,kx,ky)
+         call CMF_FILE_OPEN(1,filename,iostat)
+         if(iostat.eq.-1) stop 'Fail to open initial data file'
+         call from_sda(vx,1,f_type_in,iostat)        
+         call from_sda(vy,1,f_type_in,iostat)        
+         call from_sda(vz,1,f_type_in,iostat)        
+         if(iostat.eq.-1) stop 'Error reading initial data file'
+         call CMF_FILE_CLOSE(1,iostat)
+         write(*,*)'2after reading:',filename
+      elseif(ic.eq.'old') then
+         call CMF_FILE_OPEN(1,filename,iostat)
+         if(iostat.eq.-1) stop 'Fail to open initial data file'
+         call from_sda(vx,1,f_type_in,iostat)        
+         call from_sda(vy,1,f_type_in,iostat)        
+         call from_sda(vz,1,f_type_in,iostat)        
+         call from_sda(passive,1,f_type_in,iostat)        
+         if(iostat.eq.-1) stop 'Error reading initial data file'
+         call CMF_FILE_CLOSE(1,iostat)
+         write(*,*)'3after reading:',filename
+      elseif(ic.eq.'dump') then
+         call CMF_FILE_OPEN(2,fmrg,iostat)
+         call CMF_CM_ARRAY_FROM_FILE_SO(2,vx,iostat)
+         call CMF_CM_ARRAY_FROM_FILE_SO(2,vy,iostat)
+         call CMF_CM_ARRAY_FROM_FILE_SO(2,vz,iostat)
+         call CMF_CM_ARRAY_FROM_FILE_SO(2,passive,iostat)
+         call CMF_FILE_CLOSE(2,iostat)
+         print *,'read dump data from',fmrg
+         open (21,file='mid.d',status='unknown')   !d_mrg
+         read(21,*) time,iii,kkk,istep
+         close(21)
+
+      else
+         print *,'ic:',ic,' not recognized!'
+         stop
+      endif
+
+         tmp=vx*conjg(vx)
+          tmp(1,:,:)=0.5*tmp(1,:,:)
+           aa=sum(tmp)
+         tmp=vy*conjg(vy)
+          tmp(1,:,:)=0.5*tmp(1,:,:)
+           bb=sum(tmp)
+         tmp=vz*conjg(vz)
+          tmp(1,:,:)=0.5*tmp(1,:,:)
+           cc=sum(tmp)
+         tmp=passive*conjg(passive)
+          tmp(1,:,:)=0.5*tmp(1,:,:)
+           pp=sum(tmp)
+         print *,'    vx,vy,vz,passive:'
+         write(6,'(4e16.7)')aa,bb,cc,pp
+
+      call wavenumber(kx,ky,kz,k2,k2_e,dt,rnu)
+      call supset(k2,ifijk,ifcnt,nx,ny,nz)
+
+c P-projection
+      tmp = (kx*real(vx) + ky*real(vy) + kz*real(vz))/k2
+      vx = cmplx(real(vx) - kx*tmp, aimag(vx))
+      vy = cmplx(real(vy) - ky*tmp, aimag(vy))
+      vz = cmplx(real(vz) - kz*tmp, aimag(vz))
+      tmp = (kx*aimag(vx) + ky*aimag(vy) + kz*aimag(vz))/k2
+      vx = cmplx(real(vx), aimag(vx) - kx*tmp)
+      vy = cmplx(real(vy), aimag(vy) - ky*tmp)
+      vz = cmplx(real(vz), aimag(vz) - kz*tmp)
+
+      if(ic.eq.'both-new'.or.ic.eq.'vel-new') then
+         cc1 = u0 * sqrt(8.*sqrt(2./pi)/(3.*pi*ak0**5))
+         k2_e = cc1 * sqrt(k2) * exp (-k2/(ak0*ak0))
+
+         vx = vx * k2_e
+         vy = vy * k2_e
+         vz = vz * k2_e
+      endif
+
+
+      if(ic.eq.'both-new'.or.ic.eq.'pass-new') then
+         cc1 = ap0 * sqrt(8.*sqrt(2./pi)/(3.*pi*akp**5))
+         k2_e = cc1 * sqrt(k2) * exp (-k2/(akp*akp))
+
+         passive = passive*k2_e
+      endif
+
+      call symmetrize(vx)
+      call symmetrize(vy)
+      call symmetrize(vz)
+      call symmetrize(passive)
+
+      ox=vx
+      oy=vy
+      oz=vz
+      passive_0 = passive
+
+      dt_h=.5*dt
+
+      if(timing) then
+         call CM_timer_clear(1)
+         call CM_timer_start(1)
+      endif
+
+      open(22,file='his-pass.d',status='unknown')
+
+
+ 1    istep = istep + 1
+
+      if(istep.ne.0) isw=2
+
+c   calculate ramdomized vel.
+c-    call CMF_randomize(istep+1000)
+c-    call ranvel(vx,vy,vz,kx,ky,kz,k2,k2_e,tmp,nx,ny,nz,
+c-   .                  dt,akapa,u0,kd)
+
+      if(trap) then
+         print *,'job being killed',trap
+         call CMF_FILE_OPEN(2,fmrg,iostat)
+         call CMF_CM_ARRAY_TO_FILE_SO(2,vx,iostat)
+         call CMF_CM_ARRAY_TO_FILE_SO(2,vy,iostat)
+         call CMF_CM_ARRAY_TO_FILE_SO(2,vz,iostat)
+         call CMF_CM_ARRAY_TO_FILE_SO(2,passive,iostat)
+         call CMF_FILE_CLOSE(2,iostat)
+         open (21,file='mid.d',status='unknown')
+         write(21,*) time,iii,kkk,istep
+         close(21)
+
+         open(26,file='pdf_du.d',status='unknown')     !pdf_du.d
+         do ii=1,nlocal
+            write(26,*) kkk-1,hdu(ii),hdp(ii)
+            do i=-nbar,nbar
+                write(26,'(i4,2e14.7)') i,dist_du(i,ii),dist_dp(i,ii)
+            enddo
+         enddo
+         close(26)
+
+         if(kkk.ge.1) then
+            close(19)
+            close(20)
+            close(22)
+         endif
+         stop
+      endif
+
+
+
+      call wavenumber(kx,ky,kz,k2,k2_e,dt,rnu)
+      
+      if(mod(istep,itout).eq.0.and.istep.ne.0) then
+         call CMF_FILE_OPEN(2,fdata(iii),iostat)
+         call CMF_CM_ARRAY_TO_FILE_SO(2,vx,iostat)
+         call CMF_CM_ARRAY_TO_FILE_SO(2,vy,iostat)
+         call CMF_CM_ARRAY_TO_FILE_SO(2,vz,iostat)
+         call CMF_CM_ARRAY_TO_FILE_SO(2,passive,iostat)
+         call CMF_FILE_CLOSE(2,iostat)
+         print *,'writing data to:',fdata(iii)
+         iii = iii + 1
+      endif
+
+      if(timing) then
+         call CM_timer_stop(1)
+         call CM_timer_print(1)
+         call CM_timer_clear(1)
+         call CM_timer_start(1)
+      endif
+
+      wx = (0.,1.) * (ky*vz - kz*vy)
+      wy = (0.,1.) * (kz*vx - kx*vz)
+      wz = (0.,1.) * (kx*vy - ky*vx)
+
+      tmp = (kx*vx+ky*vy+kz*vz)*conjg(kx*vx+ky*vy+kz*vz)
+      div_v=sum(tmp)
+      tmp = kx*vx*conjg(kx*vx)+ky*vy*conjg(ky*vy)+
+     1      kz*vz*conjg(kz*vz)
+      abv=sum(tmp)
+      div_v=div_v/sqrt(abv)
+
+      if(mod(istep,ieout).eq.0) then
+         tmp = vx*conjg(vx) + vy*conjg(vy) + vz*conjg(vz)
+         tmp(1,:,:) = .5 * tmp(1,:,:)
+         do i=1,nek
+            eku(i)=sum(tmp,mask=(abs(sqrt(k2)-i-0.49999).lt.0.5))
+         end do
+         
+         tmp = passive*conjg(passive)
+         tmp(1,:,:) = .5 * tmp(1,:,:)
+         do i=1,nek
+            ekp(i)=sum(tmp,mask=(abs(sqrt(k2)-i-0.49999).lt.0.5))
+         end do
+
+      endif
+
+      kx = real(vx)
+      ky = aimag(vx)
+      kz = real(vy)
+      k2 = aimag(vy)
+      k2_e = real(vz)
+      tmp1 = aimag(vz)
+
+      call fft_cr(vx,w)
+      call fft_cr(vy,w)
+      call fft_cr(vz,w)
+      call fft_cr(wx,w)
+      call fft_cr(wy,w)
+      call fft_cr(wz,w)
+      call fft_cr(passive,w)
+
+c calculate statistics
+
+      if(mod(istep,ieout).eq.0) then
+
+c   u x-spcae stored in u2
+      tmp_z=vx
+      call reverse(tmp_z)
+      forall(i=1:nx) u2(2*i-1,:,:)=real(tmp_z(i,:,:))
+      forall(i=1:nx) u2(2*i,:,:)=aimag(tmp_z(i,:,:))
+
+      write(80,*) '#k  ',kkk-1,time
+      do ii=1,nlocal
+c get d_r u stored in uu
+         uu = cshift(u2,1,ishift(ii))-cshift(u2,1,-ishift(ii))
+c pdf for du
+         call gd(uu,dist1,nbar,isw,hdu(ii))
+         do i=-nbar,nbar
+            dist_du(i,ii)=dist_du(i,ii)+dist1(i)
+         enddo
+         uu = abs(uu)
+c moments of du
+         er(1) = sum(uu)*scale
+         do ip=2,10
+            er(ip) = sum(uu**ip)*scale
+         enddo
+         write(80,'(i4,10(1x,e14.7))') ishift(ii)*2,(er(ip),ip=1,10)
+      enddo
+
+c   p x-spcae stored in u2
+      tmp_z=passive
+      call reverse(tmp_z)
+      forall(i=1:nx) p2(2*i-1,:,:)=real(tmp_z(i,:,:))
+      forall(i=1:nx) p2(2*i,:,:)=aimag(tmp_z(i,:,:))
+
+      write(81,*) '#k  ',kkk-1,time
+      write(82,*) '#k  ',kkk-1,time
+      do ii=1,nlocal
+c get d_r p stored in uu
+         uu = cshift(p2,1,ishift(ii))-cshift(p2,1,-ishift(ii))
+c pdf for dp
+         call gd(uu,dist1,nbar,isw,hdp(ii))
+         do i=-nbar,nbar
+            dist_dp(i,ii)=dist_dp(i,ii)+dist1(i)
+         enddo
+         uu = abs(uu)
+c moments of dp
+         er(1) = sum(uu)*scale
+         do ip=2,10
+            er(ip) = sum(uu**ip)*scale
+         enddo
+         write(81,'(i4,10(1x,e14.7))') ishift(ii)*2,(er(ip),ip=1,10)
+      enddo
+
+c cross term (du)(dp)^2
+      do ii=1,nlocal
+         uu = cshift(u2,1,ishift(ii))-cshift(u2,1,-ishift(ii))
+         du3=sum(uu**3)*scale
+         adu3=sum(abs(uu**3))*scale
+         uu = (cshift(u2,1,ishift(ii))-cshift(u2,1,-ishift(ii)))
+     .       *(cshift(p2,1,ishift(ii))-cshift(p2,1,-ishift(ii)))**2
+         pu1= sum(uu)*scale
+         apu1= sum(abs(uu))*scale
+         write(82,'(i4,4(1x,e14.7))') ishift(ii)*2,pu1,apu1,du3,adu3
+      enddo
+
+
+      endif
+
+
+      tmp = vx * conjg(vx)
+      vx_square = sum(tmp) / (2*nx*ny*nz)
+      tmp = vy * conjg(vy)
+      vy_square = sum(tmp) / (2*nx*ny*nz)
+      tmp = vz * conjg(vz)
+      vz_square = sum(tmp) / (2*nx*ny*nz)
+      v_square = vx_square + vy_square + vz_square
+
+      tmp = wx * conjg(wx)
+      wx_square = sum(tmp) / (2*nx*ny*nz)
+      tmp = wy * conjg(wy)
+      wy_square = sum(tmp) / (2*nx*ny*nz)
+      tmp = wz * conjg(wz)
+      wz_square = sum(tmp) / (2*nx*ny*nz)
+      w_square = wx_square + wy_square + wz_square
+      tmp = passive*conjg(passive)
+      pp = sum(tmp)/(2*nx*ny*nz)
+
+      vw = 1./(2.*nx*ny*nz*sqrt(v_square*w_square))
+      tmp = real(vx)*real(wx)+real(vy)*real(wy)+real(vz)*real(wz)
+      helicity=sum(tmp)
+      tmp = aimag(vx)*aimag(wx)+aimag(vy)*aimag(wy)+aimag(vz)*aimag(wz)
+      helicity = (helicity + sum(tmp)) * vw
+
+      tmp = real(vy)*real(wz) - real(vz)*real(wy)
+      wz = cmplx(real(vz)*real(wx) - real(vx)*real(wz), aimag(wz))
+      wx = cmplx(real(vx)*real(wy) - real(vy)*real(wx), aimag(wx))
+      wy = cmplx(tmp, aimag(wy))
+      tmp = aimag(vy)*aimag(wz) - aimag(vz)*aimag(wy)
+      wz = cmplx(real(wz), aimag(vz)*aimag(wx) - aimag(vx)*aimag(wz))
+      wx = cmplx(real(wx), aimag(vx)*aimag(wy) - aimag(vy)*aimag(wx))
+      wy = cmplx(real(wy), tmp)
+      
+      passive_x=cmplx(real(passive)*real(vx),aimag(passive)*aimag(vx))
+      passive_y=cmplx(real(passive)*real(vy),aimag(passive)*aimag(vy))
+      passive_z=cmplx(real(passive)*real(vz),aimag(passive)*aimag(vz))
+      
+      tmp = wx * conjg(wx) + wy * conjg(wy) + wz * conjg(wz)
+      v_cross_w = sum(tmp) * vw
+
+      write(*,100) istep,time,.5*v_square,.5*w_square,div_v,pp
+      if(v_square.gt.vbound) then
+        print *,'v_square out of bound!'
+        stop
+      endif
+      if(pp.gt.pbound) then
+        print *,'pp out of bound!'
+        stop
+      endif
+
+
+      if(mod(istep,ieout).eq.0) then
+
+c calculate rms and flt for vel.
+
+      tmp = vx * conjg(vx)
+      uu2 = sum(tmp) / (2*nx*ny*nz)
+      tmp_z=cmplx(real(vx)**2,aimag(vx)**2)
+      tmp = tmp_z * conjg(tmp_z)
+      uu4 = sum(tmp) / (2*nx*ny*nz)
+      uu4=uu4/uu2**2
+
+      tmp = passive * conjg(passive)
+      pp2 = sum(tmp) / (2*nx*ny*nz)
+      tmp_z=cmplx(real(vx)**2,aimag(vx)**2)
+      tmp = tmp_z * conjg(tmp_z)
+      pp4 = sum(tmp) / (2*nx*ny*nz)
+      pp4=pp4/pp2**2
+
+      endif
+
+      vx = cmplx(kx,ky)
+      vy = cmplx(kz,k2)
+      vz = cmplx(k2_e,tmp1)
+
+      call wavenumber(kx,ky,kz,k2,k2_e,dt,rnu)
+
+      call fft_rc(wx,w)
+      call fft_rc(wy,w)
+      call fft_rc(wz,w)
+      
+      call fft_rc(passive,w)
+      call fft_rc(passive_x,w)
+      call fft_rc(passive_y,w)
+      call fft_rc(passive_z,w)
+
+c  calculate flatness for du/dx
+      if(mod(istep,ieout).eq.0) then
+
+      tmp_z = (0.,1.)*kx*vx
+      call fft_cr(tmp_z,w)
+      tmp   = tmp_z * conjg(tmp_z)
+      duu2  = sum(tmp) / (2*nx*ny*nz)
+      tmp_z = cmplx((real(tmp_z))**2,(aimag(tmp_z))**2)
+      tmp   = tmp_z * conjg(tmp_z)
+      duu4  = sum(tmp) / (2*nx*ny*nz)
+      duu4=duu4/duu2**2
+
+      tmp_z = (0.,1.)*kx*passive
+      call fft_cr(tmp_z,w)
+      tmp   = tmp_z * conjg(tmp_z)
+      dpp2  = sum(tmp) / (2*nx*ny*nz)
+      tmp_z = cmplx((real(tmp_z))**2,(aimag(tmp_z))**2)
+      tmp   = tmp_z * conjg(tmp_z)
+      dpp4  = sum(tmp) / (2*nx*ny*nz)
+      dpp4=dpp4/dpp2**2
+
+      endif
+      
+      call symmetrize(wx)
+      call symmetrize(wy)
+      call symmetrize(wz)
+      
+      call symmetrize(vx)
+      call symmetrize(vy)
+      call symmetrize(vz)
+      
+      call symmetrize(passive)
+      call symmetrize(passive_x)
+      call symmetrize(passive_y)
+      call symmetrize(passive_z)
+      
+      passive_x = (0.,-1.)*(kx*passive_x + ky*passive_y + kz*passive_z)
+
+      tmp = (kx*real(wy) + ky*real(wz) + kz*real(wx))/k2
+      wy = cmplx(real(wy) - kx*tmp, aimag(wy))
+      wz = cmplx(real(wz) - ky*tmp, aimag(wz))
+      wx = cmplx(real(wx) - kz*tmp, aimag(wx))
+      tmp = (kx*aimag(wy) + ky*aimag(wz) + kz*aimag(wx))/k2
+      wy = cmplx(real(wy), aimag(wy) - kx*tmp)
+      wz = cmplx(real(wz), aimag(wz) - ky*tmp)
+      wx = cmplx(real(wx), aimag(wx) - kz*tmp)
+
+c energy transfer
+      if(mod(istep,ieout).eq.0) then
+
+c P-projection
+         tmp = (kx*real(vx) + ky*real(vy) + kz*real(vz))/k2
+         vx = cmplx(real(vx) - kx*tmp, aimag(vx))
+         vy = cmplx(real(vy) - ky*tmp, aimag(vy))
+         vz = cmplx(real(vz) - kz*tmp, aimag(vz))
+         tmp = (kx*aimag(vx) + ky*aimag(vy) + kz*aimag(vz))/k2
+         vx = cmplx(real(vx), aimag(vx) - kx*tmp)
+         vy = cmplx(real(vy), aimag(vy) - ky*tmp)
+         vz = cmplx(real(vz), aimag(vz) - kz*tmp)
+
+
+         tmp = real(vx)*real(wy) + real(vy)*real(wz) + 
+     &        real(vz)*real(wx) +
+     &        aimag(vx)*aimag(wy) + aimag(vy)*aimag(wz) + 
+     &        aimag(vz)*aimag(wx)
+         tmp(1,:,:) = .5 * tmp(1,:,:)
+         write(20,*) '#k ',(kkk-1)
+            do i=1,nek
+            etrr(i)=sum(tmp,mask=(sqrt(k2).gt.i-0.00001))
+            write(20,'(i4,3(1x,e16.7))') i,ekp(i),eku(i),etrr(i)
+         end do
+         kkk = kkk + 1
+       endif
+
+c plant seed for random number generator
+      if(forcing.eq.'random') call CMF_randomize(istep+1000)
+         
+            
+
+      if(istep.eq.0) then
+         vx = vx * (1.-rnu*dt_h*k2) + dt_h*wy
+         vy = vy * (1.-rnu*dt_h*k2) + dt_h*wz
+         vz = vz * (1.-rnu*dt_h*k2) + dt_h*wx
+         passive = passive*(1.-akapa*dt_h*k2) + dt_h*passive_x
+
+         call supfor(vx,vy,vz,tmp,k2,nx,ny,nz,ifcnt,ifijk,force_c,nvfor)
+         call psvfor(passive,tmp,k2,nx,ny,nz,ifcnt,ifijk,force_p,forcing
+     .               ,npfor)
+
+         call CMF_FILE_OPEN(2,fscr,iostat)
+         call CMF_CM_ARRAY_TO_FILE_FMS(2,wy,iostat)
+         call CMF_CM_ARRAY_TO_FILE_FMS(2,wz,iostat)
+         call CMF_CM_ARRAY_TO_FILE_FMS(2,wx,iostat)
+         call CMF_CM_ARRAY_TO_FILE_FMS(2,passive_x,iostat)
+         if(iostat.eq.-1) stop 'Error in writting scratch'
+         call CMF_FILE_CLOSE(2,iostat)
+
+         time = time + dt_h
+      elseif(istep.eq.1) then
+         vx = ox + dt*wy - rnu*dt*k2*vx
+         vy = oy + dt*wz - rnu*dt*k2*vy
+         vz = oz + dt*wx - rnu*dt*k2*vz
+         passive = passive_0 + dt*passive_x - akapa*dt*k2*passive
+
+         call supfor(vx,vy,vz,tmp,k2,nx,ny,nz,ifcnt,ifijk,force_c,nvfor)
+         call psvfor(passive,tmp,k2,nx,ny,nz,ifcnt,ifijk,force_p,forcing
+     .               ,npfor)
+
+         call CMF_FILE_OPEN(2,fscr,iostat)
+         call CMF_CM_ARRAY_FROM_FILE_FMS(2,ox,iostat)
+         call CMF_CM_ARRAY_FROM_FILE_FMS(2,oy,iostat)
+         call CMF_CM_ARRAY_FROM_FILE_FMS(2,oz,iostat)
+         call CMF_CM_ARRAY_FROM_FILE_FMS(2,passive_0,iostat)
+         if(iostat.eq.-1) stop 'Error in reading scratch'
+         call CMF_FILE_CLOSE(2,iostat)
+         call CMF_FILE_UNLINK(fscr,iostat)
+
+         time = time + dt_h
+      else
+         vx = vx + dt_h*(3.*wy - k2_e*ox)
+         vy = vy + dt_h*(3.*wz - k2_e*oy)
+         vz = vz + dt_h*(3.*wx - k2_e*oz)
+
+         vx = vx*k2_e
+         vy = vy*k2_e
+         vz = vz*k2_e
+         
+         call supfor(vx,vy,vz,tmp,k2,nx,ny,nz,ifcnt,ifijk,force_c,nvfor)
+         call psvfor(passive,tmp,k2,nx,ny,nz,ifcnt,ifijk,force_p,forcing
+     .               ,npfor)
+
+         call wavenumber(kx,ky,kz,k2,k2_e,dt,akapa)
+                  
+         passive = passive + dt_h*(3.*passive_x - k2_e*passive_0)
+
+         passive = passive*k2_e
+
+
+         ox = wy
+         oy = wz
+         oz = wx
+         
+         passive_0 = passive_x
+
+         time = time + dt
+      endif
+
+
+      if(mod(istep,ieout).eq.0.and.istep.ne.0) then
+
+
+c calculate Re_l,kd and lambda
+         tmp = vx*conjg(vx) + vy*conjg(vy) + vz*conjg(vz)
+         tmp(1,:,:) = .5 * tmp(1,:,:)
+         et=sum(tmp)
+         epsilon=2*rnu*sum(k2*tmp)
+         kd=epsilon/rnu**3
+         kd=sqrt(sqrt(kd))
+         lambda=sqrt(10*et*rnu/epsilon)
+         re_l=sqrt(2*et/3)*lambda/rnu
+         ee=2*et/3
+         ee=2*ee/pi
+         s_int=sum(tmp/sqrt(k2))/ee
+         t_eddy=s_int/sqrt(2*et/3)
+
+c   Calculate Pr and Pc numbers
+         pc=sqrt(2*et/3)/akapa/kd
+         etac=exp(0.25*alog(akapa**3/epsilon))
+         etab=exp(0.25*alog(akapa**2*rnu/epsilon))
+
+         write(22,'(f9.4,7(1x,f7.3))') time,
+     .       pc,1/etac,1/etab,pp2,pp4,dpp2,dpp4
+
+         write(19,'(f9.4,2(1x,f6.2),5(1x,f8.4))') 
+     .       time,re_l,kd,t_eddy,uu2,uu4,duu2,duu4
+
+      endif
+
+
+      if(istep.le.nstep) goto 1
+
+         open(26,file='pdf_du.d',status='unknown')     !pdf_du.d
+         do ii=1,nlocal
+            write(26,*) kkk-1,hdu(ii),hdp(ii)
+            do i=-nbar,nbar
+                write(26,'(i4,2e14.7)') i,dist_du(i,ii),dist_dp(i,ii)
+            enddo
+         enddo
+         close(26)
+
+      call deallocate_fft_setup(id_fft)
+      
+ 100  format('step',i6,' t=',f10.5,' E=',e14.6,' W=',e14.6,
+     1       ' DV=',e14.6,' P=',f10.5)
+
+      stop
+      end
+
+
+      subroutine supset(k2,ifijk,ifcnt,nx,ny,nz)
+      integer  ifcnt(2), ifijk(200,3,2)
+      real,array(nx,ny,nz)::k2
+CMF$ layout k2(:serial,,)
+c
+      eps = 1.0e-6
+      ifcnt(1) = 0
+      ifcnt(2) = 0
+      do i=1,3
+         do k=1,nz
+            if(k.gt.3.and.k.lt.nz-1)goto 2
+            do j=1,ny
+               if(j.gt.3.and.j.lt.ny-1)goto 1
+               irk = int(sqrt(k2(i,j,k))+eps)
+               if ((irk.ge.3).or.(irk.le.0)) goto 1
+               ifcnt(irk) = ifcnt(irk) + 1
+               ifijk(ifcnt(irk),1,irk) = i
+               ifijk(ifcnt(irk),2,irk) = j
+               ifijk(ifcnt(irk),3,irk) = k
+ 1             continue
+            enddo
+ 2          continue
+         enddo
+      enddo
+
+      return
+      end
+
+      subroutine supfor(vx,vy,vz,tmp,k2,nx,ny,nz,ifcnt,ifijk,force,
+     .           nvfor)
+      complex,array(nx,ny,nz)::vx,vy,vz
+      real,array(nx,ny,nz)::k2,tmp
+      integer ifcnt(2), ifijk(200,3,2)
+      real force(2)
+
+CMF$ layout vx(:serial,,),vy(:serial,,),vz(:serial,,),tmp(:serial,,)
+CMF$ layout k2(:serial,,)
+
+
+      tmp=vx*conjg(vx)+vy*conjg(vy)+vz*conjg(vz)
+      tmp(1,:,:) = .5 * tmp(1,:,:)
+
+      do is=1,nvfor
+
+         ff = sum(tmp,mask=(abs(sqrt(k2)-is-0.499999).lt.0.5))
+         ff = sqrt(force(is)/ff)
+
+         do i=1,ifcnt(is)
+            i1=ifijk(i,1,is)
+            i2=ifijk(i,2,is)
+            i3=ifijk(i,3,is)
+            vx(i1,i2,i3) = vx(i1,i2,i3)*ff
+            vy(i1,i2,i3) = vy(i1,i2,i3)*ff
+            vz(i1,i2,i3) = vz(i1,i2,i3)*ff
+         enddo
+      enddo
+
+      return
+      end
+
+
+      subroutine psvfor(passive,tmp,k2,nx,ny,nz,ifcnt,ifijk,force,
+     .                  forcing,npfor)
+      character*40 forcing
+      complex,array(nx,ny,nz)::passive
+      real,array(nx,ny,nz)::k2,tmp
+      integer ifcnt(2), ifijk(200,3,2)
+      real force(2)
+      complex for_r(5,10,10),fff,ppp
+      real a(5,10,10),b(5,10,10)
+
+CMF$ layout passive(:serial,,),tmp(:serial,,)
+CMF$ layout k2(:serial,,)
+CMF$ layout for_r(:serial,,),a(:serial,,),b(:serial,,)
+
+      if(forcing.eq.'random') then
+          call CMF_random (a,1.)
+          a=6.2831853*a
+          for_r = cmplx(cos(a),sin(a),0.)
+c         print *,'angle ',a(2,2,2)/6.2831853
+      endif
+
+      tmp=passive*conjg(passive)
+      tmp(1,:,:) = .5 * tmp(1,:,:)
+
+      do is=1,npfor
+
+         ff = sum(tmp,mask=(abs(sqrt(k2)-is-0.499999).lt.0.5))
+         ff = sqrt(force(is)/ff)
+
+         do i=1,ifcnt(is)
+            i1=ifijk(i,1,is)
+            i2=ifijk(i,2,is)
+            i3=ifijk(i,3,is)
+            ppp=passive(i1,i2,i3)
+            if(forcing.eq.'ker') then
+                 fff=ppp/abs(ppp)          
+               elseif(forcing.eq.'random') then
+                 fff=ppp*for_r(i1,i2,i3)*ff
+               elseif(forcing.eq.'shell') then
+                 fff=ppp*ff
+               else
+                 print *,'forcing:',forcing,' not recognized!'
+                 stop
+            endif
+            passive(i1,i2,i3) = fff
+         enddo
+      enddo
+
+    
+         if(forcing.eq.'ker') then
+            tmp=passive*conjg(passive)
+            tmp(1,:,:) = .5 * tmp(1,:,:)
+            do is=1,npfor
+               ff = sum(tmp,mask=(abs(sqrt(k2)-is-0.499999).lt.0.5))
+               ff = sqrt(force(is)/ff)
+               where (abs(sqrt(k2)-is-0.499999).lt.0.5) 
+     .             passive=passive*ff 
+            enddo
+          endif
+ 
+      return
+      end
+
+
+      subroutine ranvel(vx,vy,vz,kx,ky,kz,k2,k2_e,tmp,nx,ny,nz,
+     .                  dt,akapa,u0,kd)
+      include '/usr/include/cm/CMF_defs.h'
+      include '/usr/include/cm/cmssl-cmf.h'
+      complex,array(nx,ny,nz)::vx,vy,vz
+      real,array(nx,ny,nz)::kx,ky,kz,k2,k2_e,tmp
+      real kd
+CMF$ layout vx(:serial,,)
+CMF$ layout vy(:serial,,)
+CMF$ layout vz(:serial,,)
+CMF$ layout kx(:serial,,)
+CMF$ layout ky(:serial,,)
+CMF$ layout kz(:serial,,)
+CMF$ layout k2(:serial,,)
+CMF$ layout k2_e(:serial,,)
+CMF$ layout tmp(:serial,,)
+
+      a0=0.0001
+      npower=4
+      y_vel=3.666667
+
+      call gaussian_f(vx,kx,ky,nx,ny,nz)
+      call gaussian_f(vy,kx,ky,nx,ny,nz)
+      call gaussian_f(vz,kx,ky,nx,ny,nz)
+
+      call wavenumber(kx,ky,kz,k2,k2_e,dt,akapa)
+
+      tmp = (kx*real(vx) + ky*real(vy) + kz*real(vz))/k2
+      vx = cmplx(real(vx) - kx*tmp, aimag(vx),0.)
+      vy = cmplx(real(vy) - ky*tmp, aimag(vy),0.)
+      vz = cmplx(real(vz) - kz*tmp, aimag(vz),0.)
+      tmp = (kx*aimag(vx) + ky*aimag(vy) + kz*aimag(vz))/k2
+      vx = cmplx(real(vx), aimag(vx) - kx*tmp,0.)
+      vy = cmplx(real(vy), aimag(vy) - ky*tmp,0.)
+      vz = cmplx(real(vz), aimag(vz) - kz*tmp,0.)
+
+      tmp = exp(-y_vel*0.25*log(k2))
+      where(sqrt(k2).gt.kd) tmp=tmp*exp(-a0*abs(sqrt(k2)-kd)**npower)
+      vx=vx*tmp
+      vy=vy*tmp
+      vz=vz*tmp
+
+      call symmetrize(vx)
+      call symmetrize(vy)
+      call symmetrize(vz)
+
+      tmp = vx*conjg(vx) + vy*conjg(vy) + vz*conjg(vz)
+      tmp(1,:,:) = .5 * tmp(1,:,:)
+      aa=sum(tmp)
+      vx=vx*u0/sqrt(aa)
+      vy=vy*u0/sqrt(aa)
+      vz=vz*u0/sqrt(aa)
+
+      return
+      end
+
+
+      subroutine gaussian_f(u,t1,t2,nx,ny,nz)
+      include '/usr/include/cm/CMF_defs.h'
+      include '/usr/include/cm/cmssl-cmf.h'
+      complex, array(nx,ny,nz) :: u
+      real,    array(nx,ny,nz) :: t1,t2
+CMF$ layout u(:serial,,)
+CMF$ layout t1(:serial,,)
+CMF$ layout t2(:serial,,)
+
+      u  = (0., 0.)
+      t1 = 0.
+      t2 = 0.
+      call CMF_random (t1,1.)
+      call CMF_random (t2,1.)
+      where(t1.le.1.e-30)t1 = 1.e-30
+      where(t2.le.1.e-30)t2 = 1.e-30
+      t2=6.2831853*t2
+
+      u = t1*cmplx(cos(t2),sin(t2),0.)
+
+      return
+      end
+
+
+      subroutine from_sda(u,i,f_type,iostat)
+      include '/usr/include/cm/CMF_defs.h'
+      include '/usr/include/cm/cmssl-cmf.h'
+      complex, array(mx,my,mz) :: u
+      character*40 f_type
+      common / dim / mx,my,mz,mx2,id_fft
+CMF$ layout u(:serial,,)
+      if(f_type.eq.'plain') then
+            call CMF_CM_ARRAY_FROM_FILE(i,u,iostat)
+         elseif(f_type.eq.'so') then
+            call CMF_CM_ARRAY_FROM_FILE_SO(i,u,iostat)
+         elseif(f_type.eq.'so') then
+            call CMF_CM_ARRAY_FROM_FILE_FMS(i,u,iostat)
+         else
+            print *,'f_type:',f_type,' not recognized'
+      endif
+      return
+      end
+
+
+      subroutine to_sda(u,i,f_type,iostat)
+      include '/usr/include/cm/CMF_defs.h'
+      include '/usr/include/cm/cmssl-cmf.h'
+      complex, array(mx,my,mz) :: u
+      character*40 f_type
+      common / dim / mx,my,mz,mx2,id_fft
+CMF$ layout u(:serial,,)
+      if(f_type.eq.'plain') then
+            call CMF_CM_ARRAY_TO_FILE(i,u,iostat)
+         elseif(f_type.eq.'so') then
+            call CMF_CM_ARRAY_TO_FILE_SO(i,u,iostat)
+         elseif(f_type.eq.'so') then
+            call CMF_CM_ARRAY_TO_FILE_FMS(i,u,iostat)
+         else
+            print *,'f_type:',f_type,' not recognized'
+      endif
+      return
+      end
+
+
+        subroutine sig_handle(signum)
+        integer signum
+        logical trap
+        common / kill / trap
+        trap=.true.
+        return
+        end
+
+
+      subroutine gd(tmp,dist,nbar,is,fac)
+      real tmp(n2,ny,nz)
+      real dist(-nbar:nbar)
+      real low, low1, low2
+      common / vmax / high,n2
+      common / dim / nx,ny,nz,nx2,id_fft
+CMF$ layout tmp(:serial,,)
+
+
+      if(is.eq.0) then
+
+         low = minval(tmp)
+         high = maxval(tmp)
+         high = max(abs(low),abs(high))*1.5
+         low = -high
+         fac = high
+         delta = (high-low) /(2*nbar)
+      else
+         high = fac
+         low = -high
+         delta = (high-low) /(2*nbar)
+      endif
+
+      do i=-nbar,-1
+         low1= (i-1) * delta
+         low2=low1+delta
+         dist(i)=count(low1.le.tmp.and.tmp.lt.low2)
+      enddo
+         low1= -delta
+         low2= delta
+         dist(0)=0.5*count(low1.le.tmp.and.tmp.lt.low2)
+      do i=1,nbar
+         low1= i * delta
+         low2=low1+delta
+         dist(i)=count(low1.le.tmp.and.tmp.lt.low2)
+      enddo
+
+      return
+      end
+
+
+
+
+
+------- End of Forwarded Message
